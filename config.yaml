@@ -1,0 +1,34 @@
+# Universal Wayback Machine scraper config.
+# Run: python -m wayback run --config config.yaml
+
+run_dir: "./data"          # where manifest.json, state.json, raw/ and clean/ live
+threads: 4                 # parallel download workers
+request_delay: 1.0         # base seconds between requests per worker
+max_retries: 10            # max retries per request before marking it failed
+snapshot: first            # capture kept per URL: first | last | latest | closest:YYYYMMDD
+                           # 'first' uses fast server-side collapse (earliest in range).
+                           # last/latest/closest need an uncollapsed scan (slow on big
+                           # sites). For "newest" cheaply, narrow `from` to a later year.
+
+# Query params to ignore when keying/naming URLs, so variants that differ only by
+# these collapse to one page (e.g. ?v=1.0&method=X == ?method=X).
+ignore_query_params:
+  - v
+
+google_sheets:             # disabled for now
+  enabled: false
+
+targets:
+  - name: devdocs
+    url: "http://developers.facebook.com"
+    match: prefix          # exact | prefix | host | domain
+    from: "20070101"       # default window; use `enumerate --merge --from 20060101
+    to: "20110930"         # --to 20061231` to fold in earlier-only pages
+    html_only: true
+    include: []
+    exclude:
+      - 'action=(edit|history|raw)'
+      - 'printable=yes'
+      - 'diff='
+      - 'oldid='
+    localize_assets: false
