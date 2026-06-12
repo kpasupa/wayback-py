@@ -4,7 +4,9 @@ title Wayback Cleanup
 pushd "%~dp0"
 
 echo =====================================
-echo Cleaning pages into data\clean\ ...
+echo  Wayback Cleanup (re-clean)
+echo  DO NOT CLOSE THIS WINDOW
+echo  Open status.bat to monitor progress
 echo =====================================
 echo.
 
@@ -13,6 +15,6 @@ python -m wayback clean --config config.yaml %*
 
 echo.
 echo =====================================
-echo Cleanup finished. Open data\clean\_index.html
+echo Cleanup finished.
 echo =====================================
 pause
