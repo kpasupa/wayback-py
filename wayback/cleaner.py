@@ -13,12 +13,13 @@ import time
 import warnings
 from pathlib import Path, PurePosixPath
 
-from bs4 import BeautifulSoup, Comment
+from bs4 import BeautifulSoup, Comment, MarkupResemblesLocatorWarning
 from bs4 import XMLParsedAsHTMLWarning
 
-# Some captures are XML feeds (RSS/sitemaps) served as text/html; parsing them with
-# the HTML parser is fine for our link-rewriting purposes, so quiet the warning.
+# Some captures are XML feeds or near-empty responses; parsing them with the HTML
+# parser is fine for our link-rewriting purposes, so quiet these warnings.
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
 
 from .config import Config
 from .enumerate import load_manifest
