@@ -129,15 +129,15 @@ def _safe(seg: str) -> str:
 
 
 def _stem_segments(path: str) -> list[str]:
-    """Path segments with the final source extension stripped (kept as a bare stem)."""
-    segs = [_safe(s) for s in path.split("/") if s]
-    if segs:
-        last = segs[-1]
-        if "." in last:
-            stem, ext = last.rsplit(".", 1)
+    """Path segments with source extensions stripped from every segment."""
+    result = []
+    for seg in [_safe(s) for s in path.split("/") if s]:
+        if "." in seg:
+            stem, ext = seg.rsplit(".", 1)
             if ext.lower() in SOURCE_EXTS and stem:
-                segs[-1] = stem
-    return segs
+                seg = stem
+        result.append(seg)
+    return result
 
 
 def _query_segments(query: str) -> list[str]:

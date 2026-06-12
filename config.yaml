@@ -1,7 +1,7 @@
 # Universal Wayback Machine scraper config.
 # Run: python -m wayback run --config config.yaml
 
-run_dir: "./data"          # where manifest.json, state.json, raw/ and clean/ live
+run_dir: "./job01"         # where manifest.json, state.json, raw/ and clean/ live
 threads: 4                 # parallel download workers
 request_delay: 1.0         # base seconds between requests per worker
 max_retries: 10            # max retries per request before marking it failed
@@ -19,16 +19,18 @@ google_sheets:             # disabled for now
   enabled: false
 
 targets:
-  - name: devdocs
-    url: "http://developers.facebook.com"
+  - name: www              # label for this target — becomes the output subfolder name
+    url: "http://wiki.developers.facebook.com"
     match: prefix          # exact | prefix | host | domain
     from: "20070101"       # default window; use `enumerate --merge --from 20060101
     to: "20110930"         # --to 20061231` to fold in earlier-only pages
     html_only: true
     include: []
     exclude:
+      # --- MediaWiki-specific (remove for non-wiki sites) ---
       - 'action=(edit|history|raw)'
       - 'printable=yes'
       - 'diff='
       - 'oldid='
+      - 'redirect=no'
     localize_assets: false
