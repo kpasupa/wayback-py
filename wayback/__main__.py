@@ -4,8 +4,9 @@ Commands:
   enumerate     build manifest.json (the checklist) from CDX
   download      download manifest URLs to raw/ (resumable, rate-limit aware)
   clean         turn raw/ HTML into clean offline docs in clean/
-  fetch-assets  discover and download assets missing from the manifest (waves)
-  run           enumerate -> download -> clean
+  fetch-assets  discover and download in-scope assets missing from the manifest (waves)
+  fetch-external fetch external-domain assets/iframes into manifest_external.json
+  run           enumerate -> download -> [fetch-external] -> clean
   status        print live status from state.json (run in a separate terminal)
 """
 
@@ -64,13 +65,16 @@ def cmd_clean(args) -> int:
 
 
 def cmd_run(args) -> int:
-    from . import cleaner, downloader
+    from . import assets, cleaner, downloader
     from . import enumerate as enum
     from .reporter import make_state
     config = load_config(args.config)
     state = make_state(config)
     enum.run(config, state, only_target=args.target, max_urls=args.max)
     downloader.run(config, state, only_target=args.target)
+    if config.external_asset:
+        # Fetch external resources before the final clean so links resolve locally.
+        assets.run_external(config, state, only_target=args.target)
     cleaner.run(config, state, only_target=args.target)
     return 0
 
@@ -81,6 +85,16 @@ def cmd_fetch_assets(args) -> int:
     config = load_config(args.config)
     state = make_state(config)
     assets.run(config, state, only_target=args.target)
+    return 0
+
+
+def cmd_fetch_external(args) -> int:
+    from . import assets, cleaner
+    from .reporter import make_state
+    config = load_config(args.config)
+    state = make_state(config)
+    assets.run_external(config, state, only_target=args.target)
+    cleaner.run(config, state, only_target=args.target)
     return 0
 
 
@@ -144,9 +158,14 @@ def main(argv=None) -> int:
     p_cl.set_defaults(func=cmd_clean)
 
     p_fa = sub.add_parser("fetch-assets",
-                          help="discover and download assets missing from manifest")
+                          help="discover and download in-scope assets missing from manifest")
     _add_common(p_fa)
     p_fa.set_defaults(func=cmd_fetch_assets)
+
+    p_fe = sub.add_parser("fetch-external",
+                          help="fetch external-domain assets/iframes, then re-clean")
+    _add_common(p_fe)
+    p_fe.set_defaults(func=cmd_fetch_external)
 
     p_run = sub.add_parser("run", help="enumerate -> download -> clean")
     _add_common(p_run)

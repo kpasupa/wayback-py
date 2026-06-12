@@ -67,6 +67,9 @@ class Config:
     ignore_query_params: list[str]
     sheets: SheetsConfig
     targets: list[Target]
+    external_asset: bool = False
+    external_exclude: list[str] = field(default_factory=list)
+    kill_redirects: bool = False
 
     def target(self, name: str) -> Target:
         for t in self.targets:
@@ -127,6 +130,13 @@ def load_config(path: str | Path) -> Config:
     if sheets.enabled and not sheets.spreadsheet_id:
         raise ConfigError("google_sheets.enabled is true but spreadsheet_id is empty")
 
+    external_exclude = list(data.get("external_exclude") or [])
+    for pat in external_exclude:
+        try:
+            re.compile(pat)
+        except re.error as exc:
+            raise ConfigError(f"external_exclude: bad regex {pat!r}: {exc}") from exc
+
     return Config(
         run_dir=Path(str(data.get("run_dir", "./data"))).expanduser(),
         threads=int(data.get("threads", 4)),
@@ -136,4 +146,7 @@ def load_config(path: str | Path) -> Config:
         ignore_query_params=list(data.get("ignore_query_params") or []),
         sheets=sheets,
         targets=targets,
+        external_asset=bool(data.get("external_asset", False)),
+        external_exclude=external_exclude,
+        kill_redirects=bool(data.get("kill_redirects", False)),
     )

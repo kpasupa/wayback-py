@@ -107,6 +107,26 @@ def resolve_href(href: str, page_original_url: str) -> str | None:
     return urljoin(page_original_url, base) + frag
 
 
+def resolve_css_ref(ref: str, css_url: str | None) -> str | None:
+    """Resolve a CSS url()/@import target to the absolute original URL it points at.
+
+    Handles Wayback-wrapped, absolute, protocol-relative (//host/...), and relative
+    refs (resolved against the stylesheet's own original URL). Returns None for data:
+    URIs and empties.
+    """
+    ref = ref.strip().strip("'\"").strip()
+    if not ref or ref.lower().startswith("data:"):
+        return None
+    unwrapped = unwrap_wayback(ref)
+    if unwrapped:
+        return unwrapped
+    if ref.lower().startswith(("http://", "https://")):
+        return ref
+    if ref.startswith("//"):
+        return "http:" + ref
+    return urljoin(css_url, ref) if css_url else None
+
+
 def host_of(url: str) -> str:
     return _clean_host(urlparse(url).netloc)
 

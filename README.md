@@ -41,21 +41,23 @@ pip install -r requirements.txt
 ## Usage
 
 ```
-python -m wayback enumerate --config config.yaml     # build manifest.json
-python -m wayback download  --config config.yaml     # download (resumable)
-python -m wayback clean     --config config.yaml     # build clean offline docs
-python -m wayback run       --config config.yaml     # all three in sequence
-python -m wayback status    --config config.yaml     # live status (separate terminal)
+python -m wayback enumerate      --config config.yaml  # build manifest.json
+python -m wayback download       --config config.yaml  # download (resumable)
+python -m wayback clean          --config config.yaml  # build clean offline docs
+python -m wayback fetch-external --config config.yaml  # fetch external assets/iframes
+python -m wayback run            --config config.yaml  # all phases in sequence
+python -m wayback status         --config config.yaml  # live status (separate terminal)
 ```
 
 Windows shortcuts (double-click):
 
 | Script | Does |
 |---|---|
-| `new.bat` | full run: enumerate → download → clean |
+| `new.bat` | full run: enumerate → download → [fetch-external] → clean |
 | `resume.bat` | resume the download |
+| `fetch-external.bat` | fetch external-domain assets/iframes, then re-clean |
 | `cleanup.bat` | clean only (`cleanup.bat --force` to re-clean everything) |
-| `status.bat` | live status, refreshing every few seconds |
+| `status.bat` | live status, refreshing every few seconds (`status.bat 5` = every 5s) |
 
 ### Useful flags
 
@@ -81,7 +83,8 @@ Cleaned   : 0 / 0
 
 `Status` is `alive` when the running process is live, `idle` when finished, `dead`
 if it crashed. `Process` is Enumerating / Downloading / Waiting for rate limit /
-Cleaning / Idle.
+Fetching assets / Cleaning / Idle. `Downloaded X / Y` climbs during the download and
+each fetch-external wave.
 
 ## Resuming after a rate limit or crash
 
@@ -108,6 +111,13 @@ snapshot: first            # first | last | latest | closest:YYYYMMDD
 # these collapse to one page (e.g. ?v=1.0&method=X == ?method=X).
 ignore_query_params:
   - v
+
+external_asset: false      # fetch resources pages pull from EXTERNAL domains
+                           # (images, CSS, JS, SWF, XML, <iframe> content). See below.
+external_exclude: []       # regexes; external URLs matching any are NOT fetched
+                           # (e.g. 'facebook\.com/(plugins|connect)/' for social widgets)
+kill_redirects: false      # strip page-driven redirects (meta-refresh + inline no-JS->JS
+                           # bounce calls) so fetched widget pages display, don't redirect
 
 google_sheets:             # optional; omit or enabled:false to skip
   enabled: false
@@ -138,6 +148,43 @@ URLs are canonicalized first: `:80`/`:443` and a trailing dot on the host are fo
 away, `//` in paths is collapsed, and `ignore_query_params` are dropped — so
 equivalent URLs resolve to the same page.
 
+### External assets (`external_asset: true`)
+
+Archived pages routinely pull images, CSS, JS, SWF, XML and `<iframe>` content from
+**external** domains (CDNs, widgets, partner sites). With `external_asset: true` the
+tool fetches those from Wayback (period-correct) so the offline site is self-contained:
+
+- A separate **`manifest_external.json`** records them (same shape as `manifest.json`
+  plus a `kind` of `"asset"` or `"iframe"`); the main manifest stays untouched.
+- Files land under **`clean/<target>/_external/<host>/…`**, never colliding with the
+  site tree, and the cleaner rewrites page references to those local copies.
+- An **`<iframe>`** is fetched as a *page plus its own direct assets* — its images/CSS/JS
+  are pulled too, but its `<a>` links are **not** followed (no crawling the other site).
+- Discovery runs in **waves** (a stylesheet/iframe is fetched, then scanned for what *it*
+  references) until nothing new is found.
+
+Run it automatically as part of `run`, or standalone after a download with
+`python -m wayback fetch-external`. It is idempotent — already-fetched resources and
+on-disk files are skipped. Note: "external" means *any host other than the target's*,
+so sibling subdomains (e.g. `blog.example.com` for a `www.example.com` target) are
+treated as external; widen the target's `match` to `domain` if you want them in the
+main manifest instead.
+
+**Skipping noise (`external_exclude`):** some third-party widgets (Facebook like-boxes,
+social connect plugins) only redirect or break offline and pull in dozens of dead
+assets. List regexes in `external_exclude` to skip fetching those URLs; the referencing
+`<iframe>`/tag then keeps its original archive URL (a working online fallback) instead
+of a broken local copy.
+
+**Keeping redirecting pages (`kill_redirects`):** if you'd rather *display* a fetched
+widget/iframe than skip it, set `kill_redirects: true`. The cleaner then strips
+`<meta http-equiv="refresh">` tags and the inline no-JS→JS bounce calls (e.g. Facebook's
+`redirectToJSPage`) from the page, so it renders its captured content instead of
+navigating away. The injected `wayback-py-script.js` additionally no-ops
+`location.assign/replace` at runtime. The one thing nothing can stop is a third-party
+script setting `location.href = …` directly (a browser security boundary) — for those,
+`external_exclude` is the fallback.
+
 ### Local file naming
 
 - source extensions (`.php`, `.asp`, …) become `.html`
@@ -147,21 +194,26 @@ equivalent URLs resolve to the same page.
 
 ## Styling & hosting
 
-Each target folder is **self-contained**: the cleaner writes `clean/<target>/style.css`
-and `clean/<target>/site.js` into the target folder, and every page links to both with
-relative paths that stay inside the folder.
+Each target folder is **self-contained**: the cleaner writes
+`clean/<target>/wayback-py-style.css` and `clean/<target>/wayback-py-script.js` into the
+target folder, and every page links to both with relative paths that stay inside it.
 
-- **`style.css`** — edit this one file to restyle the whole target.
-- **`site.js`** — shared script loaded on every page. Edit it to change behaviour
-  site-wide **without re-cleaning** (it runs in the browser). The default injects a
-  responsive `<meta name="viewport">`; add your own tweaks below the marked line.
+- **`wayback-py-style.css`** — edit this one file to restyle the whole target. For
+  docs-style captures (`html_only: true`) it carries readable base styling; for full-site
+  captures (`html_only: false`) it is written **empty** so the site's own CSS isn't
+  overridden (still linked, so you can add tweaks).
+- **`wayback-py-script.js`** — shared script loaded on every page. Edit it to change
+  behaviour site-wide **without re-cleaning** (it runs in the browser). The default
+  injects a responsive `<meta name="viewport">` and no-ops `location.assign/replace`
+  redirects; add your own tweaks below the marked line.
 
 Both are only (re)written when missing or on `clean --force`, so your edits survive a
 normal incremental `clean`.
 
 To publish the result, serve the **target folder** as the web root — e.g. point your
-server at `clean/devdocs/`. Its `index.html` is the homepage and every link and the
-stylesheet resolve within that folder, so it works as a standalone static site.
+server at `clean/<target>/` (`python -m http.server` works). Its `index.html` is the
+homepage and every link/stylesheet resolves within that folder, so it works as a
+standalone static site. (Serve over HTTP, not `file://` — JS-driven pages need it.)
 
 ## Optional: Google Sheets status
 

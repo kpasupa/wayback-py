@@ -1,6 +1,7 @@
 # Universal Wayback Machine scraper config.
-# Run:         python -m wayback run --config config.yaml
-# Full assets: python -m wayback fetch-assets --config config.yaml  (after run)
+# Run:           python -m wayback run --config config.yaml   (enumerate->download->
+#                fetch-external [if external_asset]->clean)
+# External only: python -m wayback fetch-external --config config.yaml  (re-run later)
 
 run_dir: "./job01"         # where manifest.json, state.json, raw/ and clean/ live
 threads: 4                 # parallel download workers
@@ -15,6 +16,23 @@ snapshot: first            # capture kept per URL: first | last | latest | close
 # these collapse to one page (e.g. ?v=1.0&method=X == ?method=X).
 ignore_query_params:
   - v
+
+# Fetch resources that target pages pull from EXTERNAL domains (CDNs, widgets,
+# partner sites): images, CSS, JS, SWF, XML, and <iframe> content. They are fetched
+# from Wayback into manifest_external.json and localized under <target>/_external/<host>/.
+# Iframes are fetched as a page plus their own direct assets (not link-crawled).
+external_asset: true
+
+# Regexes matched against external-resource URLs to SKIP fetching them — useful for
+# third-party social widgets that only redirect/break offline (e.g. Facebook plugins).
+# Skipped iframes keep their original archive URL (online fallback) instead.
+external_exclude: []
+#  - 'facebook\.com/(plugins|connect)/'
+
+# Strip page-driven redirects from cleaned HTML (meta-refresh + inline no-JS->JS bounce
+# calls like Facebook's), so fetched widget/iframe pages display instead of redirecting.
+# Note: a third-party script's own location.href= redirect can't be blocked this way.
+kill_redirects: true
 
 google_sheets:             # disabled for now
   enabled: false

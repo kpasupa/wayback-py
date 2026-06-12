@@ -22,10 +22,10 @@ warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
 
 from .config import Config
-from .enumerate import load_manifest
+from .enumerate import load_external_manifest, load_manifest
 from .state import State, CLEANING, DONE
-from .urls import (host_of, normalize, registrable_suffix_match, resolve_href,
-                   split_fragment, unwrap_wayback)
+from .urls import (host_of, normalize, registrable_suffix_match, resolve_css_ref,
+                   resolve_href, split_fragment, unwrap_wayback)
 
 STYLE_FILE = "wayback-py-style.css"
 SCRIPT_FILE = "wayback-py-script.js"
@@ -63,13 +63,38 @@ def _sniff_css(data: bytes) -> bool:
         if end >= 0:
             check = check[end + 2:].lstrip()
     # Reject JavaScript: tokens that appear right after any leading comment.
-    _JS = (b"(function", b"!function", b"function ", b"var ", b"let ",
-           b"const ", b"window.", b"jQuery", b"$.fn")
-    for marker in _JS:
+    for marker in _JS_MARKERS:
         if check.startswith(marker):
             return False
     # CSS must have both { and : (property blocks).
     return b"{" in data[:4000] and b":" in data[:4000]
+
+
+_JS_MARKERS = (
+    b"(function", b"!function", b";(function", b"function(", b"function ",
+    b"var ", b"let ", b"const ", b"window.", b"document.", b"jQuery", b"$.fn",
+    b"$(", b"(window", b"(this", b'"use strict"', b"'use strict'", b"/*!",
+)
+
+
+def _sniff_js(data: bytes) -> bool:
+    """True if raw bytes look like JavaScript rather than HTML or CSS.
+
+    Catches assets whose URL had a query string (e.g. script.js?ver=1.0), which
+    assign_local_paths names <stem>/ver/1.0.html — so without this they'd be cleaned
+    as HTML and the injected <link>/<script> would corrupt the script.
+    """
+    head = data[:600].lstrip().lstrip(b"\xef\xbb\xbf")  # drop leading BOM/whitespace
+    if head[:1] in (b"<",):
+        return False  # HTML/XML markup
+    if head.startswith(b"/*"):  # strip a leading block comment (license banner)
+        end = head.find(b"*/")
+        if end >= 0:
+            head = head[end + 2:].lstrip()
+    if head.startswith(b"//"):  # strip a leading line comment
+        nl = head.find(b"\n")
+        head = head[nl + 1:].lstrip() if nl >= 0 else b""
+    return any(head.startswith(m) for m in _JS_MARKERS)
 
 # Wayback toolbar element ids.
 WAYBACK_IDS = {
@@ -83,8 +108,38 @@ WAYBACK_INFRA_RE = re.compile(r"web-static\.archive\.org", re.I)
 WAYBACK_CONTENT_RE = re.compile(r"__wm\.|wombat|WB_wombat|RufflePlayer", re.I)
 DEAD_LOCAL_RE = re.compile(r"^/(skins|extensions|opensearch_desc|favicon\.ico)")
 
+# Inline-script redirect patterns removed when kill_redirects is on. These are the
+# no-JS -> JS bounce calls some sites (e.g. Facebook social widgets) queue in the page
+# itself; deleting the call kills the redirect while the static content still renders.
+_INLINE_REDIRECT_RES = (
+    re.compile(r',?\s*\["NoscriptOverride","redirectToJSPage",\[\],\[[^\]]*\]\]'),
+)
+
+
+def _kill_redirects(soup: BeautifulSoup) -> None:
+    """Neutralize page-driven redirects: <meta refresh> tags and inline redirect calls.
+
+    Cannot stop a third-party script's `location.href = …` (browsers forbid intercepting
+    the location setter), but removing the inline call that *invokes* the redirect — and
+    any meta-refresh — handles the common archive cases without breaking page content.
+    """
+    for m in soup.find_all("meta"):
+        if (m.get("http-equiv") or "").lower() == "refresh":
+            m.decompose()
+    for sc in soup.find_all("script"):
+        if sc.get("src") or not sc.string:
+            continue
+        text = sc.string
+        if "redirectToJSPage" not in text:
+            continue
+        for rx in _INLINE_REDIRECT_RES:
+            text = rx.sub("", text)
+        sc.string = text
+
 # Rewrite url() in CSS files.
-CSS_URL_RE = re.compile(r'url\(\s*["\']?(https?://[^)"\'<>\s]+)["\']?\s*\)', re.I)
+# Matches url(...) with any target — absolute, Wayback-wrapped, or relative. The ref
+# is classified/resolved by resolve_css_ref (data: URIs are skipped there).
+CSS_URL_RE = re.compile(r"""url\(\s*['"]?([^)'"]+?)['"]?\s*\)""", re.I)
 
 BASE_CSS = """/* wayback-py-style.css — edit this file to restyle every page. */
 :root{--fg:#1a1a2e;--text:#24292e;--muted:#586069;--accent:#1a73e8;
@@ -113,15 +168,40 @@ img{max-width:100%;height:auto}
 hr{border:none;border-top:1px solid var(--border);margin:2em 0}
 """
 
+# Used instead of BASE_CSS for targets captured WITH their own assets (html_only:
+# false): the site brings its own stylesheets, so our base styling would fight the
+# original layout. The file is still injected/linked, just empty for you to edit.
+EMPTY_CSS = """/* wayback-py-style.css — intentionally empty.
+   This target was captured with its own CSS (html_only: false), so no base styling is
+   applied. Add site-wide tweaks here; this file is linked on every page in this folder. */
+"""
+
 SITE_JS = """/* wayback-py-script.js - shared script for every page in this folder.
    Edit this one file to affect the whole site (no re-clean needed). */
 (function () {
+  /* Responsive viewport (added at runtime so it works on every page). */
   if (!document.querySelector('meta[name="viewport"]')) {
     var m = document.createElement('meta');
     m.name = 'viewport';
     m.content = 'width=device-width, initial-scale=1.0';
     document.head.appendChild(m);
   }
+
+  /* Keep archived pages from redirecting away (e.g. Facebook widgets, meta-refresh).
+     Note: location.href/= redirects can't be intercepted by a page script. */
+  function killMetaRefresh() {
+    var metas = document.querySelectorAll('meta[http-equiv]');
+    for (var i = 0; i < metas.length; i++) {
+      if (/refresh/i.test(metas[i].getAttribute('http-equiv') || '')) {
+        metas[i].parentNode.removeChild(metas[i]);
+      }
+    }
+  }
+  killMetaRefresh();
+  document.addEventListener('DOMContentLoaded', killMetaRefresh);
+  try { window.location.assign  = function () {}; } catch (e) {}
+  try { window.location.replace = function () {}; } catch (e) {}
+
   /* --- add your own site-wide tweaks below --- */
 })();
 """
@@ -165,21 +245,33 @@ def _rewrite_attr(tag, attr: str, page_original: str, this_clean: PurePosixPath,
 
 
 _LOCALIZABLE_LINK_RELS = {"stylesheet", "icon", "apple-touch-icon"}
+_LAZY_ATTRS = ("data-src", "data-original", "data-lazy-src")
 
 def _rewrite_assets(soup: BeautifulSoup, page_original: str, this_clean: PurePosixPath,
                     url_map: dict[str, str], ignore_params: tuple[str, ...]) -> None:
     """Rewrite img/script/iframe/stylesheet/favicon src attributes to local paths."""
-    for tag in soup.find_all(["img", "script", "source", "video", "audio", "iframe"], src=True):
+    for tag in soup.find_all(["img", "script", "source", "video", "audio", "iframe",
+                              "embed"], src=True):
         _rewrite_attr(tag, "src", page_original, this_clean, url_map, ignore_params)
+    for tag in soup.find_all("object", attrs={"data": True}):
+        _rewrite_attr(tag, "data", page_original, this_clean, url_map, ignore_params)
     for tag in soup.find_all("link", href=True):
         rels = set(tag.get("rel") or [])
         if rels & _LOCALIZABLE_LINK_RELS:
             _rewrite_attr(tag, "href", page_original, this_clean, url_map, ignore_params)
-    # Rewrite url() inside inline <style> blocks.
+    # Lazy-load attributes (data-src etc.) used by JS slideshow/image libraries.
+    for attr in _LAZY_ATTRS:
+        for tag in soup.find_all(attrs={attr: True}):
+            _rewrite_attr(tag, attr, page_original, this_clean, url_map, ignore_params)
+    # Rewrite url() inside <style> blocks and inline style="" attributes (relative
+    # refs resolve against the page's own URL).
     for style_tag in soup.find_all("style"):
         if style_tag.string:
             style_tag.string = _rewrite_css_urls(style_tag.string, this_clean,
-                                                 url_map, ignore_params)
+                                                 url_map, ignore_params, page_original)
+    for tag in soup.find_all(style=True):
+        tag["style"] = _rewrite_css_urls(tag["style"], this_clean, url_map,
+                                         ignore_params, page_original)
 
 
 def _rewrite_links(soup: BeautifulSoup, page_original: str, this_clean: PurePosixPath,
@@ -203,12 +295,17 @@ def _rewrite_links(soup: BeautifulSoup, page_original: str, this_clean: PurePosi
 
 
 def _rewrite_css_urls(css: str, this_clean: PurePosixPath,
-                      url_map: dict[str, str], ignore_params: tuple[str, ...]) -> str:
-    """Rewrite url() in CSS text to local relative paths for any asset in the manifest."""
+                      url_map: dict[str, str], ignore_params: tuple[str, ...],
+                      css_original: str | None = None) -> str:
+    """Rewrite url() in CSS text to local relative paths for any asset in the manifest.
+
+    Relative refs (e.g. url(../img/x.png)) are resolved against css_original — the
+    stylesheet's own URL — so sprites/preloaders referenced relatively are localized too.
+    """
     def _replace(m: re.Match) -> str:
-        raw = m.group(1)
-        unwrapped = unwrap_wayback(raw)
-        original = unwrapped or raw
+        original = resolve_css_ref(m.group(1), css_original)
+        if not original:
+            return m.group(0)
         base, frag = split_fragment(original)
         target_clean = url_map.get(normalize(base, ignore_params))
         if target_clean:
@@ -219,9 +316,12 @@ def _rewrite_css_urls(css: str, this_clean: PurePosixPath,
 
 def clean_html(html: str, page_original: str, this_clean: PurePosixPath,
                url_map: dict[str, str], scope_hosts: set[str], localize: bool,
-               ignore_params: tuple[str, ...], css_href: str, js_href: str) -> str:
+               ignore_params: tuple[str, ...], css_href: str, js_href: str,
+               kill_redirects: bool = False) -> str:
     soup = BeautifulSoup(html, "html.parser")
     _strip_wayback(soup)
+    if kill_redirects:
+        _kill_redirects(soup)
     _rewrite_links(soup, page_original, this_clean, url_map, scope_hosts, ignore_params)
     if localize:
         _rewrite_assets(soup, page_original, this_clean, url_map, ignore_params)
@@ -262,7 +362,9 @@ def build_index(clean_target_dir: Path, label: str, pages: list[tuple[str, str]]
 
 def run(config: Config, state: State, only_target: str | None = None,
         force: bool = False) -> int:
-    manifest = load_manifest(config.run_dir)
+    # The external-asset manifest (if any) is folded in so external resources and
+    # iframe pages are cleaned/copied and their references resolve via url_map.
+    manifest = load_manifest(config.run_dir) + load_external_manifest(config.run_dir)
     if only_target:
         manifest = [e for e in manifest if e["target"] == only_target]
 
@@ -270,9 +372,11 @@ def run(config: Config, state: State, only_target: str | None = None,
     clean_dir = Path(config.run_dir) / "clean"
     ignore = tuple(config.ignore_query_params)
 
-    # Detect PHP/ASP files that output CSS but were mapped to .html by path logic.
-    # Build a local_path override so url_map and all stylesheet links use .css.
-    css_overrides: dict[str, str] = {}  # old .html local_path -> new .css local_path
+    # Files named .html by the path logic but whose bytes are really CSS or JS — e.g.
+    # PHP that outputs CSS, or script.js?ver=1.0 named .../ver/1.0.html. Override their
+    # extension so url_map/links use it and they are copied, not cleaned as HTML (which
+    # would inject <link>/<script> and corrupt them).
+    css_overrides: dict[str, str] = {}  # old .html local_path -> new .css/.js local_path
     for entry in manifest:
         lp = entry["local_path"]
         if not lp.endswith(".html"):
@@ -284,23 +388,35 @@ def run(config: Config, state: State, only_target: str | None = None,
             data = src.read_bytes()
         except OSError:
             continue
-        if not _is_binary(data, lp) and _sniff_css(data):
+        if _is_binary(data, lp):
+            continue
+        if _sniff_css(data):
             css_overrides[lp] = lp[:-5] + ".css"
+        elif _sniff_js(data):
+            css_overrides[lp] = lp[:-5] + ".js"
 
+    # An external resource that failed to download (e.g. a CDN image the Archive never
+    # captured) is left out of the map, so its references stay as the absolute Wayback
+    # URL (an online fallback) instead of becoming a dead local link.
     url_map = {
         normalize(e["original"], ignore): css_overrides.get(e["local_path"], e["local_path"])
         for e in manifest
+        if "kind" not in e or (raw_dir / e["local_path"]).exists()
     }
     scope_hosts = {host_of(t.url) for t in config.targets}
     localize_by_target = {t.name: t.localize_assets for t in config.targets}
+    html_only_by_target = {t.name: t.html_only for t in config.targets}
 
     clean_dir.mkdir(parents=True, exist_ok=True)
     for tname in {e["target"] for e in manifest}:
         tdir = clean_dir / tname
         tdir.mkdir(parents=True, exist_ok=True)
+        # Docs-style captures (html_only) get our readable base styling; full-site
+        # captures (html_only: false) keep their own CSS, so we inject an empty file.
+        base_style = BASE_CSS if html_only_by_target.get(tname, True) else EMPTY_CSS
         sp = tdir / STYLE_FILE
         if not sp.exists() or force:
-            sp.write_text(BASE_CSS, encoding="utf-8")
+            sp.write_text(base_style, encoding="utf-8")
         jp = tdir / SCRIPT_FILE
         if not jp.exists() or force:
             jp.write_text(SITE_JS, encoding="utf-8")
@@ -332,14 +448,12 @@ def run(config: Config, state: State, only_target: str | None = None,
         this_clean = PurePosixPath(effective_lp)
         dst.parent.mkdir(parents=True, exist_ok=True)
 
-        # Remove stale opposite-extension file left by a previous run if the
-        # css_override decision changed (e.g. was CSS, now detected as JS).
-        if effective_lp.endswith(".css"):
-            stale = (clean_dir / effective_lp[:-4]).with_suffix(".html")
-        else:
-            stale = (clean_dir / effective_lp[:-5]).with_suffix(".css") if effective_lp.endswith(".html") else None
-        if stale and stale.exists():
-            stale.unlink()
+        # If this entry is being written under an overridden extension (.css/.js), drop
+        # the stale .html file a previous run may have left at the original path.
+        if effective_lp != entry["local_path"]:
+            stale = clean_dir / entry["local_path"]
+            if stale.exists():
+                stale.unlink()
 
         # Binary files (images, fonts, …) are copied straight through.
         if _is_binary(raw_bytes, effective_lp):
@@ -350,21 +464,32 @@ def run(config: Config, state: State, only_target: str | None = None,
                 (effective_lp, entry["original"]))
             continue
 
-        raw = raw_bytes.decode("utf-8", errors="replace")
-
+        # CSS (incl. PHP-that-outputs-CSS) gets url() rewriting; HTML pages get full
+        # cleaning; any other text resource (.js, .xml, ...) is copied through as-is so
+        # injecting <link>/<script> can't corrupt it.
         if effective_lp.endswith(".css"):
-            out = _rewrite_css_urls(raw, this_clean, url_map, ignore)
-        else:
+            raw = raw_bytes.decode("utf-8", errors="replace")
+            dst.write_text(_rewrite_css_urls(raw, this_clean, url_map, ignore,
+                                             entry["original"]),
+                           encoding="utf-8")
+            title = entry["original"]
+        elif effective_lp.endswith(".html"):
+            raw = raw_bytes.decode("utf-8", errors="replace")
             css_href = _relpath(this_clean, f"{entry['target']}/{STYLE_FILE}")
             js_href = _relpath(this_clean, f"{entry['target']}/{SCRIPT_FILE}")
+            localize = (localize_by_target.get(entry["target"], False)
+                        or config.external_asset)
             out = clean_html(raw, entry["original"], this_clean, url_map, scope_hosts,
-                             localize_by_target.get(entry["target"], False), ignore,
-                             css_href, js_href)
+                             localize, ignore, css_href, js_href,
+                             config.kill_redirects)
+            dst.write_text(out, encoding="utf-8")
+            title = _title_of(raw, entry["original"])
+        else:
+            dst.write_bytes(raw_bytes)
+            title = entry["original"]
 
-        dst.write_text(out, encoding="utf-8")
         cleaned += 1
         state.incr(cleaned=1)
-        title = _title_of(raw, entry["original"])
         index_pages.setdefault(entry["target"], []).append((effective_lp, title))
 
     for target_name, pages in index_pages.items():

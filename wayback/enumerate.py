@@ -15,10 +15,27 @@ from .state import State, ENUMERATING
 from .urls import _dedupe, assign_local_paths, normalize
 
 MANIFEST_FILENAME = "manifest.json"
+EXTERNAL_MANIFEST_FILENAME = "manifest_external.json"
 
 
 def manifest_path(run_dir: Path) -> Path:
     return Path(run_dir) / MANIFEST_FILENAME
+
+
+def external_manifest_path(run_dir: Path) -> Path:
+    return Path(run_dir) / EXTERNAL_MANIFEST_FILENAME
+
+
+def load_external_manifest(run_dir: Path) -> list[dict]:
+    """Return the external-asset manifest, or [] when it doesn't exist yet.
+
+    Unlike load_manifest this never raises — external assets are optional, so the
+    absence of the file simply means none have been fetched.
+    """
+    path = external_manifest_path(run_dir)
+    if not path.exists():
+        return []
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _passes_filters(original: str, target: Target) -> bool:
