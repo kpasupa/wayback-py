@@ -44,6 +44,33 @@ def _is_binary(data: bytes, local_path: str) -> bool:
         return True
     return b"\x00" in data[:512]
 
+
+def _sniff_css(data: bytes) -> bool:
+    """True if raw bytes look like CSS rather than HTML or JavaScript.
+
+    Catches PHP/ASP scripts that output CSS but got mapped to .html by
+    assign_local_paths (which strips source extensions).
+    """
+    head = data[:500].lstrip()
+    if head[:5].lower() in (b"<!doc", b"<html", b"<?xml"):
+        return False
+    if head[:2] in (b"<!", b"<?"):
+        return False
+    # Skip a leading block comment (/* ... */) — both CSS and JS use these.
+    check = head
+    if check.startswith(b"/*"):
+        end = check.find(b"*/")
+        if end >= 0:
+            check = check[end + 2:].lstrip()
+    # Reject JavaScript: tokens that appear right after any leading comment.
+    _JS = (b"(function", b"!function", b"function ", b"var ", b"let ",
+           b"const ", b"window.", b"jQuery", b"$.fn")
+    for marker in _JS:
+        if check.startswith(marker):
+            return False
+    # CSS must have both { and : (property blocks).
+    return b"{" in data[:4000] and b":" in data[:4000]
+
 # Wayback toolbar element ids.
 WAYBACK_IDS = {
     "wm-ipp", "wm-ipp-base", "wm-ipp-print", "donato", "playback",
@@ -242,7 +269,28 @@ def run(config: Config, state: State, only_target: str | None = None,
     raw_dir = Path(config.run_dir) / "raw"
     clean_dir = Path(config.run_dir) / "clean"
     ignore = tuple(config.ignore_query_params)
-    url_map = {normalize(e["original"], ignore): e["local_path"] for e in manifest}
+
+    # Detect PHP/ASP files that output CSS but were mapped to .html by path logic.
+    # Build a local_path override so url_map and all stylesheet links use .css.
+    css_overrides: dict[str, str] = {}  # old .html local_path -> new .css local_path
+    for entry in manifest:
+        lp = entry["local_path"]
+        if not lp.endswith(".html"):
+            continue
+        src = raw_dir / lp
+        if not src.exists():
+            continue
+        try:
+            data = src.read_bytes()
+        except OSError:
+            continue
+        if not _is_binary(data, lp) and _sniff_css(data):
+            css_overrides[lp] = lp[:-5] + ".css"
+
+    url_map = {
+        normalize(e["original"], ignore): css_overrides.get(e["local_path"], e["local_path"])
+        for e in manifest
+    }
     scope_hosts = {host_of(t.url) for t in config.targets}
     localize_by_target = {t.name: t.localize_assets for t in config.targets}
 
@@ -269,10 +317,11 @@ def run(config: Config, state: State, only_target: str | None = None,
         src = raw_dir / entry["local_path"]
         if not src.exists():
             continue
-        dst = clean_dir / entry["local_path"]
+        effective_lp = css_overrides.get(entry["local_path"], entry["local_path"])
+        dst = clean_dir / effective_lp
         if dst.exists() and not force:
             index_pages.setdefault(entry["target"], []).append(
-                (entry["local_path"], entry["original"]))
+                (effective_lp, entry["original"]))
             state.incr(cleaned=1)
             continue
         try:
@@ -280,21 +329,30 @@ def run(config: Config, state: State, only_target: str | None = None,
         except OSError:
             continue
 
-        this_clean = PurePosixPath(entry["local_path"])
+        this_clean = PurePosixPath(effective_lp)
         dst.parent.mkdir(parents=True, exist_ok=True)
 
+        # Remove stale opposite-extension file left by a previous run if the
+        # css_override decision changed (e.g. was CSS, now detected as JS).
+        if effective_lp.endswith(".css"):
+            stale = (clean_dir / effective_lp[:-4]).with_suffix(".html")
+        else:
+            stale = (clean_dir / effective_lp[:-5]).with_suffix(".css") if effective_lp.endswith(".html") else None
+        if stale and stale.exists():
+            stale.unlink()
+
         # Binary files (images, fonts, …) are copied straight through.
-        if _is_binary(raw_bytes, entry["local_path"]):
+        if _is_binary(raw_bytes, effective_lp):
             dst.write_bytes(raw_bytes)
             cleaned += 1
             state.incr(cleaned=1)
             index_pages.setdefault(entry["target"], []).append(
-                (entry["local_path"], entry["original"]))
+                (effective_lp, entry["original"]))
             continue
 
         raw = raw_bytes.decode("utf-8", errors="replace")
 
-        if entry["local_path"].endswith(".css"):
+        if effective_lp.endswith(".css"):
             out = _rewrite_css_urls(raw, this_clean, url_map, ignore)
         else:
             css_href = _relpath(this_clean, f"{entry['target']}/{STYLE_FILE}")
@@ -307,7 +365,7 @@ def run(config: Config, state: State, only_target: str | None = None,
         cleaned += 1
         state.incr(cleaned=1)
         title = _title_of(raw, entry["original"])
-        index_pages.setdefault(entry["target"], []).append((entry["local_path"], title))
+        index_pages.setdefault(entry["target"], []).append((effective_lp, title))
 
     for target_name, pages in index_pages.items():
         build_index(clean_dir, f"{target_name} docs", pages)
