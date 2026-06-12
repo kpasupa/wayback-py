@@ -160,11 +160,15 @@ def run(config: Config, state: State, only_target: str | None = None,
     scope_hosts = {host_of(t.url) for t in config.targets}
     localize_by_target = {t.name: t.localize_assets for t in config.targets}
 
-    # One shared stylesheet at the clean root; every page links to it relatively.
+    # One stylesheet PER TARGET folder, so each target folder (e.g. clean/devdocs/)
+    # is self-contained and can be served as a web root on its own.
     clean_dir.mkdir(parents=True, exist_ok=True)
-    style_path = clean_dir / "style.css"
-    if not style_path.exists() or force:
-        style_path.write_text(BASE_CSS, encoding="utf-8")
+    for tname in {e["target"] for e in manifest}:
+        tdir = clean_dir / tname
+        tdir.mkdir(parents=True, exist_ok=True)
+        sp = tdir / "style.css"
+        if not sp.exists() or force:
+            sp.write_text(BASE_CSS, encoding="utf-8")
 
     # Cleanable universe = manifest entries whose raw HTML is on disk. Seed the
     # status so it keeps showing the download count and reports cleaning progress.
@@ -191,7 +195,7 @@ def run(config: Config, state: State, only_target: str | None = None,
         except OSError:
             continue
         this_clean = PurePosixPath(entry["local_path"])
-        css_href = _relpath(this_clean, "style.css")
+        css_href = _relpath(this_clean, f"{entry['target']}/style.css")
         out = clean_html(html, entry["original"], this_clean, url_map, scope_hosts,
                          localize_by_target.get(entry["target"], False), ignore, css_href)
         dst.parent.mkdir(parents=True, exist_ok=True)

@@ -145,10 +145,16 @@ equivalent URLs resolve to the same page.
 - a URL other URLs live underneath (or ends in `/`) becomes `<path>/index.html`
 - collisions get a numeric suffix so distinct URLs never overwrite
 
-## Styling
+## Styling & hosting
 
-Every cleaned page links to one shared `clean/style.css`. Edit that single file to
-restyle the whole archive. `clean --force` regenerates it from the default theme.
+Each target folder is **self-contained**: the cleaner writes `clean/<target>/style.css`
+into the target folder, and every page links to it with a relative path that stays
+inside the folder. Edit that one file to restyle the whole target; `clean --force`
+regenerates it from the default theme.
+
+To publish the result, serve the **target folder** as the web root — e.g. point your
+server at `clean/devdocs/`. Its `index.html` is the homepage and every link and the
+stylesheet resolve within that folder, so it works as a standalone static site.
 
 ## Optional: Google Sheets status
 
