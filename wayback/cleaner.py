@@ -25,18 +25,27 @@ from .config import Config
 from .enumerate import load_manifest
 from .state import State, CLEANING, DONE
 from .urls import (host_of, normalize, registrable_suffix_match, resolve_href,
-                   split_fragment)
+                   split_fragment, unwrap_wayback)
 
-# Wayback toolbar element ids and a script/style signature (defensive — `id_` raw
-# captures usually have none, but mixed captures sometimes do).
+STYLE_FILE = "wayback-py-style.css"
+SCRIPT_FILE = "wayback-py-script.js"
+
+# Wayback toolbar element ids.
 WAYBACK_IDS = {
     "wm-ipp", "wm-ipp-base", "wm-ipp-print", "donato", "playback",
     "wm-share", "wm-tabs", "wm-toolbar",
 }
-WAYBACK_SCRIPT_RE = re.compile(r"archive\.org|__wm\.|wombat|WB_wombat|RufflePlayer", re.I)
+# Wayback infrastructure hosts (toolbar CSS/JS). Only these get stripped from
+# link/script src — original site assets wrapped in web.archive.org/web/... are kept.
+WAYBACK_INFRA_RE = re.compile(r"web-static\.archive\.org", re.I)
+# Wayback script signatures found in inline content.
+WAYBACK_CONTENT_RE = re.compile(r"__wm\.|wombat|WB_wombat|RufflePlayer", re.I)
 DEAD_LOCAL_RE = re.compile(r"^/(skins|extensions|opensearch_desc|favicon\.ico)")
 
-BASE_CSS = """/* wayback-py shared stylesheet — edit this one file to restyle every page. */
+# Rewrite url() in CSS files.
+CSS_URL_RE = re.compile(r'url\(\s*["\']?(https?://[^)"\'<>\s]+)["\']?\s*\)', re.I)
+
+BASE_CSS = """/* wayback-py-style.css — edit this file to restyle every page. */
 :root{--fg:#1a1a2e;--text:#24292e;--muted:#586069;--accent:#1a73e8;
       --border:#e1e4e8;--bg:#fff;--code-bg:#f6f8fa;}
 *{box-sizing:border-box}
@@ -63,10 +72,7 @@ img{max-width:100%;height:auto}
 hr{border:none;border-top:1px solid var(--border);margin:2em 0}
 """
 
-# Shared per-target script loaded on every page. Edit clean/<target>/site.js to
-# change behaviour across the whole site WITHOUT re-cleaning. Default: add a
-# responsive viewport meta tag (and a clearly-marked spot for your own tweaks).
-SITE_JS = """/* site.js - shared script for every page in this folder.
+SITE_JS = """/* wayback-py-script.js - shared script for every page in this folder.
    Edit this one file to affect the whole site (no re-clean needed). */
 (function () {
   if (!document.querySelector('meta[name="viewport"]')) {
@@ -90,8 +96,12 @@ def _strip_wayback(soup: BeautifulSoup) -> None:
         for tag in soup.find_all(id=wm_id):
             tag.decompose()
     for tag in soup.find_all(["script", "style", "link"]):
-        sig = (tag.get("src") or tag.get("href") or "") + (tag.string or "")
-        if WAYBACK_SCRIPT_RE.search(sig) or DEAD_LOCAL_RE.search(tag.get("href") or ""):
+        src = tag.get("src") or tag.get("href") or ""
+        content = tag.string or ""
+        if (WAYBACK_INFRA_RE.search(src)
+                or WAYBACK_CONTENT_RE.search(content)
+                or WAYBACK_CONTENT_RE.search(src)
+                or DEAD_LOCAL_RE.search(src)):
             tag.decompose()
     for c in soup.find_all(string=lambda t: isinstance(t, Comment)):
         if "archive.org" in c or "FILE ARCHIVED" in c or "WAYBACK" in c.upper():
@@ -100,7 +110,6 @@ def _strip_wayback(soup: BeautifulSoup) -> None:
 
 def _rewrite_attr(tag, attr: str, page_original: str, this_clean: PurePosixPath,
                   url_map: dict[str, str], ignore_params: tuple[str, ...]) -> None:
-    """Rewrite one src/href attribute to a local relative path if the asset is in the manifest."""
     resolved = resolve_href(tag[attr], page_original)
     if not resolved:
         return
@@ -126,21 +135,33 @@ def _rewrite_links(soup: BeautifulSoup, page_original: str, this_clean: PurePosi
     for a in soup.find_all("a", href=True):
         resolved = resolve_href(a["href"], page_original)
         if not resolved:
-            continue  # same-page #anchor / mailto / js -> leave untouched
+            continue
         base, frag = split_fragment(resolved)
         target_clean = url_map.get(normalize(base, ignore_params))
         if target_clean:
-            # In scope and captured -> local relative path, fragment preserved.
             a["href"] = _relpath(this_clean, target_clean) + frag
             continue
         host = host_of(base)
         if any(registrable_suffix_match(host, h) for h in scope_hosts):
-            # In scope but never captured -> mark dead.
             a["data-broken"] = base
             a["href"] = "#"
             existing = a.get("class", [])
             a["class"] = existing + ["dead"] if existing else ["dead"]
-        # Out of scope -> leave the href exactly as-is (may be a working Wayback link).
+
+
+def _rewrite_css_urls(css: str, this_clean: PurePosixPath,
+                      url_map: dict[str, str], ignore_params: tuple[str, ...]) -> str:
+    """Rewrite url() in CSS text to local relative paths for any asset in the manifest."""
+    def _replace(m: re.Match) -> str:
+        raw = m.group(1)
+        unwrapped = unwrap_wayback(raw)
+        original = unwrapped or raw
+        base, frag = split_fragment(original)
+        target_clean = url_map.get(normalize(base, ignore_params))
+        if target_clean:
+            return f'url("{_relpath(this_clean, target_clean)}{frag}")'
+        return m.group(0)
+    return CSS_URL_RE.sub(_replace, css)
 
 
 def clean_html(html: str, page_original: str, this_clean: PurePosixPath,
@@ -158,12 +179,10 @@ def clean_html(html: str, page_original: str, this_clean: PurePosixPath,
         (soup.html or soup).insert(0, head)
     for base in soup.find_all("base"):
         base.decompose()
-    # Link to the one shared stylesheet (relative path) instead of inlining CSS, so
-    # all pages share one editable style.css.
+    # wayback-py base stylesheet injected FIRST so original site stylesheets take precedence.
     link = soup.new_tag("link", rel="stylesheet", href=css_href)
-    head.append(link)
-    # Load the one shared per-target script. Its default injects a responsive
-    # viewport meta; edit clean/<target>/site.js to change the whole site (no re-clean).
+    head.insert(0, link)
+    # Shared per-target script injected last.
     script = soup.new_tag("script", src=js_href)
     head.append(script)
     return str(soup)
@@ -197,29 +216,21 @@ def run(config: Config, state: State, only_target: str | None = None,
     raw_dir = Path(config.run_dir) / "raw"
     clean_dir = Path(config.run_dir) / "clean"
     ignore = tuple(config.ignore_query_params)
-    # Key off normalize(original), not the stored 'key', so the lookup always uses
-    # the current normalization on both the manifest side and the link side.
     url_map = {normalize(e["original"], ignore): e["local_path"] for e in manifest}
     scope_hosts = {host_of(t.url) for t in config.targets}
     localize_by_target = {t.name: t.localize_assets for t in config.targets}
 
-    # One stylesheet + one script PER TARGET folder, so each target folder
-    # (e.g. clean/devdocs/) is self-contained and can be served as a web root.
-    # Both are only (re)written when missing or on --force, so your edits survive
-    # normal incremental cleans.
     clean_dir.mkdir(parents=True, exist_ok=True)
     for tname in {e["target"] for e in manifest}:
         tdir = clean_dir / tname
         tdir.mkdir(parents=True, exist_ok=True)
-        sp = tdir / "style.css"
+        sp = tdir / STYLE_FILE
         if not sp.exists() or force:
             sp.write_text(BASE_CSS, encoding="utf-8")
-        jp = tdir / "site.js"
+        jp = tdir / SCRIPT_FILE
         if not jp.exists() or force:
             jp.write_text(SITE_JS, encoding="utf-8")
 
-    # Cleanable universe = manifest entries whose raw HTML is on disk. Seed the
-    # status so it keeps showing the download count and reports cleaning progress.
     on_disk = sum(1 for e in manifest if (raw_dir / e["local_path"]).exists())
     state.update(phase=CLEANING, target=only_target or "",
                  total=len(manifest), downloaded=on_disk,
@@ -236,29 +247,33 @@ def run(config: Config, state: State, only_target: str | None = None,
         if dst.exists() and not force:
             index_pages.setdefault(entry["target"], []).append(
                 (entry["local_path"], entry["original"]))
-            state.incr(cleaned=1)  # already clean still counts toward progress
+            state.incr(cleaned=1)
             continue
         try:
-            html = src.read_text(encoding="utf-8", errors="replace")
+            raw = src.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+
         this_clean = PurePosixPath(entry["local_path"])
-        css_href = _relpath(this_clean, f"{entry['target']}/style.css")
-        js_href = _relpath(this_clean, f"{entry['target']}/site.js")
-        out = clean_html(html, entry["original"], this_clean, url_map, scope_hosts,
-                         localize_by_target.get(entry["target"], False), ignore,
-                         css_href, js_href)
         dst.parent.mkdir(parents=True, exist_ok=True)
+
+        if entry["local_path"].endswith(".css"):
+            out = _rewrite_css_urls(raw, this_clean, url_map, ignore)
+        else:
+            css_href = _relpath(this_clean, f"{entry['target']}/{STYLE_FILE}")
+            js_href = _relpath(this_clean, f"{entry['target']}/{SCRIPT_FILE}")
+            out = clean_html(raw, entry["original"], this_clean, url_map, scope_hosts,
+                             localize_by_target.get(entry["target"], False), ignore,
+                             css_href, js_href)
+
         dst.write_text(out, encoding="utf-8")
         cleaned += 1
         state.incr(cleaned=1)
-        title = _title_of(html, entry["original"])
+        title = _title_of(raw, entry["original"])
         index_pages.setdefault(entry["target"], []).append((entry["local_path"], title))
 
     for target_name, pages in index_pages.items():
-        # Index links are relative to clean/, so include the target-prefixed paths.
         build_index(clean_dir, f"{target_name} docs", pages)
-        # Also a per-target index inside the target folder.
         tdir = clean_dir / target_name
         if tdir.exists():
             rel_pages = [(str(PurePosixPath(p).relative_to(target_name)), t)

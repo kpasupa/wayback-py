@@ -1,11 +1,12 @@
 """CLI entry point: python -m wayback <command>.
 
 Commands:
-  enumerate   build manifest.json (the checklist) from CDX
-  download    download manifest URLs to raw/ (resumable, rate-limit aware)
-  clean       turn raw/ HTML into clean offline docs in clean/
-  run         enumerate -> download -> clean
-  status      print live status from state.json (run in a separate terminal)
+  enumerate     build manifest.json (the checklist) from CDX
+  download      download manifest URLs to raw/ (resumable, rate-limit aware)
+  clean         turn raw/ HTML into clean offline docs in clean/
+  fetch-assets  discover and download assets missing from the manifest (waves)
+  run           enumerate -> download -> clean
+  status        print live status from state.json (run in a separate terminal)
 """
 
 from __future__ import annotations
@@ -74,6 +75,15 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_fetch_assets(args) -> int:
+    from . import assets
+    from .reporter import make_state
+    config = load_config(args.config)
+    state = make_state(config)
+    assets.run(config, state, only_target=args.target)
+    return 0
+
+
 def cmd_status(args) -> int:
     config = load_config(args.config)
     state = read_state(config.run_dir)
@@ -132,6 +142,11 @@ def main(argv=None) -> int:
     p_cl.add_argument("--interval", type=int, default=60, help="watch interval seconds")
     p_cl.add_argument("--force", action="store_true", help="re-clean existing files")
     p_cl.set_defaults(func=cmd_clean)
+
+    p_fa = sub.add_parser("fetch-assets",
+                          help="discover and download assets missing from manifest")
+    _add_common(p_fa)
+    p_fa.set_defaults(func=cmd_fetch_assets)
 
     p_run = sub.add_parser("run", help="enumerate -> download -> clean")
     _add_common(p_run)

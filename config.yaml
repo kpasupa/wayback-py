@@ -1,5 +1,6 @@
 # Universal Wayback Machine scraper config.
-# Run: python -m wayback run --config config.yaml
+# Run:         python -m wayback run --config config.yaml
+# Full assets: python -m wayback fetch-assets --config config.yaml  (after run)
 
 run_dir: "./job01"         # where manifest.json, state.json, raw/ and clean/ live
 threads: 4                 # parallel download workers
