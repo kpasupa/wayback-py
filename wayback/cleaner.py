@@ -30,6 +30,20 @@ from .urls import (host_of, normalize, registrable_suffix_match, resolve_href,
 STYLE_FILE = "wayback-py-style.css"
 SCRIPT_FILE = "wayback-py-script.js"
 
+_BINARY_EXTS = {
+    ".jpg", ".jpeg", ".png", ".gif", ".ico", ".bmp", ".webp",
+    ".swf", ".mp3", ".mp4", ".ogg", ".wav", ".flv",
+    ".woff", ".woff2", ".ttf", ".eot", ".otf",
+    ".pdf", ".zip",
+}
+
+
+def _is_binary(data: bytes, local_path: str) -> bool:
+    """True if the file should be copied as-is without HTML/CSS processing."""
+    if Path(local_path).suffix.lower() in _BINARY_EXTS:
+        return True
+    return b"\x00" in data[:512]
+
 # Wayback toolbar element ids.
 WAYBACK_IDS = {
     "wm-ipp", "wm-ipp-base", "wm-ipp-print", "donato", "playback",
@@ -110,21 +124,25 @@ def _strip_wayback(soup: BeautifulSoup) -> None:
 
 def _rewrite_attr(tag, attr: str, page_original: str, this_clean: PurePosixPath,
                   url_map: dict[str, str], ignore_params: tuple[str, ...]) -> None:
-    resolved = resolve_href(tag[attr], page_original)
+    val = tag[attr]
+    resolved = resolve_href(val, page_original)
     if not resolved:
         return
     base, frag = split_fragment(resolved)
     target_clean = url_map.get(normalize(base, ignore_params))
     if target_clean:
         tag[attr] = _relpath(this_clean, target_clean) + frag
+    elif val.startswith("/web/"):
+        # Root-relative Wayback URL not in manifest — make absolute so it resolves online.
+        tag[attr] = "https://web.archive.org" + val
 
 
 _LOCALIZABLE_LINK_RELS = {"stylesheet", "icon", "apple-touch-icon"}
 
 def _rewrite_assets(soup: BeautifulSoup, page_original: str, this_clean: PurePosixPath,
                     url_map: dict[str, str], ignore_params: tuple[str, ...]) -> None:
-    """Rewrite img/script/stylesheet/favicon src attributes to local paths."""
-    for tag in soup.find_all(["img", "script", "source", "video", "audio"], src=True):
+    """Rewrite img/script/iframe/stylesheet/favicon src attributes to local paths."""
+    for tag in soup.find_all(["img", "script", "source", "video", "audio", "iframe"], src=True):
         _rewrite_attr(tag, "src", page_original, this_clean, url_map, ignore_params)
     for tag in soup.find_all("link", href=True):
         rels = set(tag.get("rel") or [])
@@ -258,12 +276,23 @@ def run(config: Config, state: State, only_target: str | None = None,
             state.incr(cleaned=1)
             continue
         try:
-            raw = src.read_text(encoding="utf-8", errors="replace")
+            raw_bytes = src.read_bytes()
         except OSError:
             continue
 
         this_clean = PurePosixPath(entry["local_path"])
         dst.parent.mkdir(parents=True, exist_ok=True)
+
+        # Binary files (images, fonts, …) are copied straight through.
+        if _is_binary(raw_bytes, entry["local_path"]):
+            dst.write_bytes(raw_bytes)
+            cleaned += 1
+            state.incr(cleaned=1)
+            index_pages.setdefault(entry["target"], []).append(
+                (entry["local_path"], entry["original"]))
+            continue
+
+        raw = raw_bytes.decode("utf-8", errors="replace")
 
         if entry["local_path"].endswith(".css"):
             out = _rewrite_css_urls(raw, this_clean, url_map, ignore)

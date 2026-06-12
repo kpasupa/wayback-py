@@ -4,7 +4,9 @@ title Wayback Download
 pushd "%~dp0"
 
 echo =====================================
-echo Resuming download...
+echo  Wayback Download (resume)
+echo  DO NOT CLOSE THIS WINDOW
+echo  Open status.bat to monitor progress
 echo =====================================
 echo.
 

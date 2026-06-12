@@ -5,7 +5,9 @@ REM Run from this script's folder
 pushd "%~dp0"
 
 echo =====================================
-echo Starting Wayback scraper
+echo  Wayback Scraper
+echo  DO NOT CLOSE THIS WINDOW
+echo  Open status.bat to monitor progress
 echo =====================================
 echo.
 
