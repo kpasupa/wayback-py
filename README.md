@@ -148,9 +148,16 @@ equivalent URLs resolve to the same page.
 ## Styling & hosting
 
 Each target folder is **self-contained**: the cleaner writes `clean/<target>/style.css`
-into the target folder, and every page links to it with a relative path that stays
-inside the folder. Edit that one file to restyle the whole target; `clean --force`
-regenerates it from the default theme.
+and `clean/<target>/site.js` into the target folder, and every page links to both with
+relative paths that stay inside the folder.
+
+- **`style.css`** — edit this one file to restyle the whole target.
+- **`site.js`** — shared script loaded on every page. Edit it to change behaviour
+  site-wide **without re-cleaning** (it runs in the browser). The default injects a
+  responsive `<meta name="viewport">`; add your own tweaks below the marked line.
+
+Both are only (re)written when missing or on `clean --force`, so your edits survive a
+normal incremental `clean`.
 
 To publish the result, serve the **target folder** as the web root — e.g. point your
 server at `clean/devdocs/`. Its `index.html` is the homepage and every link and the

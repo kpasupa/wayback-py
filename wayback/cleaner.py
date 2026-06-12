@@ -62,6 +62,22 @@ img{max-width:100%;height:auto}
 hr{border:none;border-top:1px solid var(--border);margin:2em 0}
 """
 
+# Shared per-target script loaded on every page. Edit clean/<target>/site.js to
+# change behaviour across the whole site WITHOUT re-cleaning. Default: add a
+# responsive viewport meta tag (and a clearly-marked spot for your own tweaks).
+SITE_JS = """/* site.js - shared script for every page in this folder.
+   Edit this one file to affect the whole site (no re-clean needed). */
+(function () {
+  if (!document.querySelector('meta[name="viewport"]')) {
+    var m = document.createElement('meta');
+    m.name = 'viewport';
+    m.content = 'width=device-width, initial-scale=1.0';
+    document.head.appendChild(m);
+  }
+  /* --- add your own site-wide tweaks below --- */
+})();
+"""
+
 
 def _relpath(from_clean: PurePosixPath, to_clean: str) -> str:
     rel = os.path.relpath(to_clean, start=str(from_clean.parent))
@@ -106,7 +122,7 @@ def _rewrite_links(soup: BeautifulSoup, page_original: str, this_clean: PurePosi
 
 def clean_html(html: str, page_original: str, this_clean: PurePosixPath,
                url_map: dict[str, str], scope_hosts: set[str], localize: bool,
-               ignore_params: tuple[str, ...], css_href: str) -> str:
+               ignore_params: tuple[str, ...], css_href: str, js_href: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     _strip_wayback(soup)
     _rewrite_links(soup, page_original, this_clean, url_map, scope_hosts, ignore_params)
@@ -123,6 +139,10 @@ def clean_html(html: str, page_original: str, this_clean: PurePosixPath,
     # all pages share one editable style.css.
     link = soup.new_tag("link", rel="stylesheet", href=css_href)
     head.append(link)
+    # Load the one shared per-target script. Its default injects a responsive
+    # viewport meta; edit clean/<target>/site.js to change the whole site (no re-clean).
+    script = soup.new_tag("script", src=js_href)
+    head.append(script)
     return str(soup)
 
 
@@ -160,8 +180,10 @@ def run(config: Config, state: State, only_target: str | None = None,
     scope_hosts = {host_of(t.url) for t in config.targets}
     localize_by_target = {t.name: t.localize_assets for t in config.targets}
 
-    # One stylesheet PER TARGET folder, so each target folder (e.g. clean/devdocs/)
-    # is self-contained and can be served as a web root on its own.
+    # One stylesheet + one script PER TARGET folder, so each target folder
+    # (e.g. clean/devdocs/) is self-contained and can be served as a web root.
+    # Both are only (re)written when missing or on --force, so your edits survive
+    # normal incremental cleans.
     clean_dir.mkdir(parents=True, exist_ok=True)
     for tname in {e["target"] for e in manifest}:
         tdir = clean_dir / tname
@@ -169,6 +191,9 @@ def run(config: Config, state: State, only_target: str | None = None,
         sp = tdir / "style.css"
         if not sp.exists() or force:
             sp.write_text(BASE_CSS, encoding="utf-8")
+        jp = tdir / "site.js"
+        if not jp.exists() or force:
+            jp.write_text(SITE_JS, encoding="utf-8")
 
     # Cleanable universe = manifest entries whose raw HTML is on disk. Seed the
     # status so it keeps showing the download count and reports cleaning progress.
@@ -196,8 +221,10 @@ def run(config: Config, state: State, only_target: str | None = None,
             continue
         this_clean = PurePosixPath(entry["local_path"])
         css_href = _relpath(this_clean, f"{entry['target']}/style.css")
+        js_href = _relpath(this_clean, f"{entry['target']}/site.js")
         out = clean_html(html, entry["original"], this_clean, url_map, scope_hosts,
-                         localize_by_target.get(entry["target"], False), ignore, css_href)
+                         localize_by_target.get(entry["target"], False), ignore,
+                         css_href, js_href)
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_text(out, encoding="utf-8")
         cleaned += 1
