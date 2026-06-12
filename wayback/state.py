@@ -24,6 +24,7 @@ ENUMERATING = "enumerating"
 DOWNLOADING = "downloading"
 WAITING_RATE_LIMIT = "waiting_rate_limit"
 CLEANING = "cleaning"
+FETCHING_ASSETS = "fetching_assets"
 DONE = "done"
 IDLE = "idle"
 
@@ -32,6 +33,7 @@ PHASE_LABELS = {
     DOWNLOADING: "Downloading",
     WAITING_RATE_LIMIT: "Waiting for rate limit",
     CLEANING: "Cleaning",
+    FETCHING_ASSETS: "Fetching assets",
     DONE: "Idle",
     IDLE: "Idle",
 }

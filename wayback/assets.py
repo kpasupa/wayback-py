@@ -29,7 +29,7 @@ from bs4 import BeautifulSoup
 from .config import Config
 from .downloader import HEADERS, RateLimitGate, _save
 from .enumerate import load_manifest, manifest_path
-from .state import State, DOWNLOADING
+from .state import State, DOWNLOADING, FETCHING_ASSETS
 from .urls import (
     _dedupe, assign_local_paths, host_of, normalize,
     registrable_suffix_match, split_fragment, unwrap_wayback,
@@ -170,6 +170,7 @@ def run(config: Config, state: State, only_target: str | None = None) -> None:
     for wave in range(1, MAX_WAVES + 1):
         known_keys = {normalize(e["original"], ignore) for e in manifest}
 
+        state.update(phase=FETCHING_ASSETS, target=only_target or "")
         if wave == 1:
             discovered = _scan_html(clean_dir, known_keys, scope_hosts, ignore)
         else:
