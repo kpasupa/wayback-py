@@ -20,17 +20,11 @@ google_sheets:             # disabled for now
 
 targets:
   - name: www              # label for this target — becomes the output subfolder name
-    url: "http://wiki.developers.facebook.com"
+    url: "http://www.playfish.com"
     match: prefix          # exact | prefix | host | domain
-    from: "20070101"       # default window; use `enumerate --merge --from 20060101
-    to: "20110930"         # --to 20061231` to fold in earlier-only pages
-    html_only: true
+    from: "20130101"
+    to: "20131231"
+    html_only: false       # false to also enumerate images, CSS, JS (pair with localize_assets)
     include: []
-    exclude:
-      # --- MediaWiki-specific (remove for non-wiki sites) ---
-      - 'action=(edit|history|raw)'
-      - 'printable=yes'
-      - 'diff='
-      - 'oldid='
-      - 'redirect=no'
-    localize_assets: false
+    exclude: []
+    localize_assets: true  # true rewrites img/script/stylesheet src to local paths; needs html_only: false

@@ -140,6 +140,13 @@ def _stem_segments(path: str) -> list[str]:
     return result
 
 
+def _has_asset_ext(seg: str) -> bool:
+    """True if segment ends with a non-source extension (e.g. .png, .css, .js)."""
+    if "." not in seg:
+        return False
+    return seg.rsplit(".", 1)[1].lower() not in SOURCE_EXTS
+
+
 def _query_segments(query: str) -> list[str]:
     """Turn a query string into path segments: 'a=1&b=2' -> ['a','1','b','2']."""
     out: list[str] = []
@@ -203,6 +210,8 @@ def assign_local_paths(originals: list[str], prefix: str = "",
             path_segs = ["index.html"]
         elif info["stem_key"] in dirs:
             path_segs = stem + ["index.html"]
+        elif _has_asset_ext(stem[-1]):
+            path_segs = stem  # preserve original extension (.png, .css, .js, etc.)
         else:
             path_segs = stem[:-1] + [stem[-1] + ".html"]
 

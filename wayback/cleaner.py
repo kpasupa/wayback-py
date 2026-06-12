@@ -97,6 +97,28 @@ def _strip_wayback(soup: BeautifulSoup) -> None:
             c.extract()
 
 
+def _rewrite_attr(tag, attr: str, page_original: str, this_clean: PurePosixPath,
+                  url_map: dict[str, str], ignore_params: tuple[str, ...]) -> None:
+    """Rewrite one src/href attribute to a local relative path if the asset is in the manifest."""
+    resolved = resolve_href(tag[attr], page_original)
+    if not resolved:
+        return
+    base, frag = split_fragment(resolved)
+    target_clean = url_map.get(normalize(base, ignore_params))
+    if target_clean:
+        tag[attr] = _relpath(this_clean, target_clean) + frag
+
+
+def _rewrite_assets(soup: BeautifulSoup, page_original: str, this_clean: PurePosixPath,
+                    url_map: dict[str, str], ignore_params: tuple[str, ...]) -> None:
+    """Rewrite img/script/stylesheet src attributes to local paths for downloaded assets."""
+    for tag in soup.find_all(["img", "script", "source", "video", "audio"], src=True):
+        _rewrite_attr(tag, "src", page_original, this_clean, url_map, ignore_params)
+    for tag in soup.find_all("link", href=True):
+        if "stylesheet" in (tag.get("rel") or []):
+            _rewrite_attr(tag, "href", page_original, this_clean, url_map, ignore_params)
+
+
 def _rewrite_links(soup: BeautifulSoup, page_original: str, this_clean: PurePosixPath,
                    url_map: dict[str, str], scope_hosts: set[str],
                    ignore_params: tuple[str, ...]) -> None:
@@ -126,8 +148,8 @@ def clean_html(html: str, page_original: str, this_clean: PurePosixPath,
     soup = BeautifulSoup(html, "html.parser")
     _strip_wayback(soup)
     _rewrite_links(soup, page_original, this_clean, url_map, scope_hosts, ignore_params)
-    # Image/asset src is left untouched: a Wayback-wrapped src still resolves against
-    # the archive, so rewriting it would only break it.
+    if localize:
+        _rewrite_assets(soup, page_original, this_clean, url_map, ignore_params)
 
     head = soup.find("head")
     if not head:
