@@ -51,7 +51,11 @@ def _to_id_url(wayback_url: str) -> str:
 
 def _scan_html(clean_dir: Path, known_keys: set[str],
                scope_hosts: set[str], ignore: tuple[str, ...]) -> dict[str, tuple[str, str]]:
-    """Scan clean HTML for src/href attributes still pointing at Wayback URLs.
+    """Scan clean HTML for asset URLs not yet localized.
+
+    Catches two cases:
+    - src/href still pointing at web.archive.org (Wayback-wrapped originals)
+    - src/href with plain in-scope http:// URLs (never Wayback-wrapped in the raw page)
 
     Returns {original_url: (wayback_url, found_in_clean_path)}.
     Keyed by original URL so the same asset referenced on many pages appears once.
@@ -66,18 +70,27 @@ def _scan_html(clean_dir: Path, known_keys: set[str],
         for tag in soup.find_all(True):
             for attr in ("src", "href"):
                 val = tag.get(attr) or ""
-                if "web.archive.org" not in val:
+                if not val.startswith(("http://", "https://")):
                     continue
-                unwrapped = unwrap_wayback(val)
-                if not unwrapped:
-                    continue
-                base, _ = split_fragment(unwrapped)
+
+                if "web.archive.org" in val:
+                    # Wayback-wrapped: unwrap to get original
+                    unwrapped = unwrap_wayback(val)
+                    if not unwrapped:
+                        continue
+                    base, _ = split_fragment(unwrapped)
+                    wayback_url = val
+                else:
+                    # Plain original URL — build a Wayback fetch URL
+                    base, _ = split_fragment(val)
+                    wayback_url = f"https://web.archive.org/web/id_/{base}"
+
                 key = normalize(base, ignore)
                 if key in known_keys or base in found:
                     continue
                 if not any(registrable_suffix_match(host_of(base), h) for h in scope_hosts):
                     continue
-                found[base] = (val, str(html_file))
+                found[base] = (wayback_url, str(html_file))
     return found
 
 

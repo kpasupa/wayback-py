@@ -119,14 +119,22 @@ def _rewrite_attr(tag, attr: str, page_original: str, this_clean: PurePosixPath,
         tag[attr] = _relpath(this_clean, target_clean) + frag
 
 
+_LOCALIZABLE_LINK_RELS = {"stylesheet", "icon", "apple-touch-icon"}
+
 def _rewrite_assets(soup: BeautifulSoup, page_original: str, this_clean: PurePosixPath,
                     url_map: dict[str, str], ignore_params: tuple[str, ...]) -> None:
-    """Rewrite img/script/stylesheet src attributes to local paths for downloaded assets."""
+    """Rewrite img/script/stylesheet/favicon src attributes to local paths."""
     for tag in soup.find_all(["img", "script", "source", "video", "audio"], src=True):
         _rewrite_attr(tag, "src", page_original, this_clean, url_map, ignore_params)
     for tag in soup.find_all("link", href=True):
-        if "stylesheet" in (tag.get("rel") or []):
+        rels = set(tag.get("rel") or [])
+        if rels & _LOCALIZABLE_LINK_RELS:
             _rewrite_attr(tag, "href", page_original, this_clean, url_map, ignore_params)
+    # Rewrite url() inside inline <style> blocks.
+    for style_tag in soup.find_all("style"):
+        if style_tag.string:
+            style_tag.string = _rewrite_css_urls(style_tag.string, this_clean,
+                                                 url_map, ignore_params)
 
 
 def _rewrite_links(soup: BeautifulSoup, page_original: str, this_clean: PurePosixPath,
